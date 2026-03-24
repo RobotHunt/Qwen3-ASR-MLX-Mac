@@ -29,7 +29,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/mini/Qwen3-ASR-MLX-Mac/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/opt/homebrew/bin:/Users/mini/Qwen3-ASR-MLX-Mac/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>

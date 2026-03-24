@@ -982,15 +982,19 @@ async def openai_transcribe(
     if ext in [".webm", ".ogg", ".opus", ".weba"]:
         wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
         try:
-            import subprocess
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
+            import subprocess, shutil
+            ffmpeg_bin = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+            result = subprocess.run(
+                [ffmpeg_bin, "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
                 capture_output=True, timeout=30,
             )
-            Path(tmp_path).unlink(missing_ok=True)
-            tmp_path = wav_path
-        except Exception:
-            pass  # 如果 ffmpeg 不可用，尝试直接传给模型
+            if result.returncode == 0 and Path(wav_path).exists():
+                Path(tmp_path).unlink(missing_ok=True)
+                tmp_path = wav_path
+            else:
+                print(f"⚠️ ffmpeg 转换失败 (code={result.returncode}): {result.stderr.decode()[:200]}")
+        except Exception as e:
+            print(f"⚠️ ffmpeg 不可用: {e}")
 
     background_tasks.add_task(cleanup_file, tmp_path)
 
