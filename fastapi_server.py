@@ -30,7 +30,7 @@ from fastapi import (
     HTTPException,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -433,8 +433,379 @@ class ASREngine:
         return self._is_loaded and self._model is not None
 
 
+# ──────────────────────────────────────────
+# Playground HTML
+# ──────────────────────────────────────────
+PLAYGROUND_HTML = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASR Playground</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:'Inter',system-ui,-apple-system,sans-serif;
+    background:#0a0a0f;
+    color:#e4e4e7;
+    min-height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    position:relative; overflow:hidden;
+  }
+  body::before {
+    content:''; position:absolute; top:-50%; left:-50%;
+    width:200%; height:200%;
+    background:radial-gradient(circle at 30% 40%, rgba(59,130,246,0.08) 0%, transparent 50%),
+               radial-gradient(circle at 70% 60%, rgba(168,85,247,0.06) 0%, transparent 50%);
+    animation:bgShift 20s ease-in-out infinite;
+  }
+  @keyframes bgShift { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-3%,2%)} }
+  .container {
+    position:relative; z-index:1;
+    width:100%; max-width:640px; padding:20px;
+  }
+  .card {
+    background:rgba(24,24,32,0.85);
+    backdrop-filter:blur(20px);
+    border:1px solid rgba(255,255,255,0.08);
+    border-radius:20px;
+    padding:36px 32px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.5);
+  }
+  .title {
+    font-size:22px; font-weight:700;
+    background:linear-gradient(135deg,#60a5fa,#a78bfa,#f472b6);
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    text-align:center; margin-bottom:4px;
+  }
+  .subtitle {
+    text-align:center; color:#71717a; font-size:13px; margin-bottom:28px;
+  }
+  .controls {
+    display:grid; grid-template-columns:1fr 1fr; gap:12px;
+    margin-bottom:20px;
+  }
+  label { font-size:12px; color:#a1a1aa; margin-bottom:4px; display:block; font-weight:500; }
+  select, input[type=file] {
+    width:100%; padding:10px 12px;
+    background:rgba(39,39,42,0.8);
+    border:1px solid rgba(255,255,255,0.1);
+    border-radius:10px; color:#e4e4e7;
+    font-size:13px; outline:none;
+    transition:border-color 0.2s;
+  }
+  select:focus { border-color:#60a5fa; }
+  .file-zone {
+    border:2px dashed rgba(255,255,255,0.1);
+    border-radius:12px; padding:20px;
+    text-align:center; color:#71717a;
+    font-size:13px; cursor:pointer;
+    transition:all 0.2s; margin-bottom:20px;
+    position:relative;
+  }
+  .file-zone:hover, .file-zone.dragover {
+    border-color:#60a5fa; color:#60a5fa;
+    background:rgba(59,130,246,0.05);
+  }
+  .file-zone input { position:absolute; inset:0; opacity:0; cursor:pointer; }
+  .file-zone .name { color:#a78bfa; font-weight:500; margin-top:6px; }
+  .rec-row { display:flex; gap:12px; margin-bottom:24px; }
+  .btn {
+    flex:1; padding:14px;
+    border:none; border-radius:12px;
+    font-size:14px; font-weight:600;
+    cursor:pointer; transition:all 0.25s;
+    display:flex; align-items:center; justify-content:center; gap:8px;
+  }
+  .btn-rec {
+    background:linear-gradient(135deg,#ef4444,#dc2626);
+    color:#fff;
+  }
+  .btn-rec:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(239,68,68,0.3); }
+  .btn-rec.recording {
+    background:linear-gradient(135deg,#f97316,#ea580c);
+    animation:pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.4)} 50%{box-shadow:0 0 0 12px rgba(249,115,22,0)} }
+  .btn-send {
+    background:linear-gradient(135deg,#3b82f6,#6366f1);
+    color:#fff;
+  }
+  .btn-send:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(59,130,246,0.3); }
+  .btn:disabled { opacity:0.4; cursor:not-allowed; transform:none!important; box-shadow:none!important; }
+  canvas#waveform {
+    width:100%; height:64px;
+    border-radius:10px;
+    background:rgba(39,39,42,0.5);
+    margin-bottom:20px; display:none;
+  }
+  .result-box {
+    background:rgba(39,39,42,0.6);
+    border:1px solid rgba(255,255,255,0.06);
+    border-radius:12px; padding:20px;
+    display:none; animation:fadeIn 0.3s;
+  }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+  .result-box h3 {
+    font-size:13px; color:#a78bfa; font-weight:600;
+    margin-bottom:10px; display:flex; align-items:center; gap:6px;
+  }
+  .result-text {
+    font-size:15px; line-height:1.7; color:#f4f4f5;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .result-meta {
+    margin-top:12px; padding-top:12px;
+    border-top:1px solid rgba(255,255,255,0.06);
+    font-size:12px; color:#71717a;
+    display:flex; gap:16px; flex-wrap:wrap;
+  }
+  .spinner {
+    width:18px; height:18px;
+    border:2px solid rgba(255,255,255,0.2);
+    border-top-color:#60a5fa;
+    border-radius:50%;
+    animation:spin 0.6s linear infinite;
+    display:inline-block;
+  }
+  @keyframes spin { to{transform:rotate(360deg)} }
+  .status { text-align:center; font-size:13px; color:#71717a; margin-bottom:16px; min-height:20px; }
+</style>
+</head>
+<body>
+<div class="container">
+<div class="card">
+  <div class="title">🎙 ASR Playground</div>
+  <div class="subtitle">OpenAI-Compatible Speech Recognition · Apple Silicon</div>
 
-PORT = 8001  # TTS 服务占用 8000，ASR 使用 8001
+  <div class="controls">
+    <div>
+      <label>语言 Language</label>
+      <select id="lang">
+        <option value="zh" selected>中文 Chinese</option>
+        <option value="en">English</option>
+        <option value="ja">日本語 Japanese</option>
+        <option value="ko">한국어 Korean</option>
+        <option value="yue">粤语 Cantonese</option>
+        <option value="fr">Français French</option>
+        <option value="de">Deutsch German</option>
+        <option value="es">Español Spanish</option>
+        <option value="ru">Русский Russian</option>
+      </select>
+    </div>
+    <div>
+      <label>输出格式 Format</label>
+      <select id="fmt">
+        <option value="json" selected>JSON</option>
+        <option value="verbose_json">Verbose JSON</option>
+        <option value="text">Text</option>
+        <option value="srt">SRT Subtitle</option>
+        <option value="vtt">WebVTT Subtitle</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="file-zone" id="dropZone">
+    <div>📁 拖放音频文件到此处，或点击选择</div>
+    <div>支持 WAV / MP3 / M4A / FLAC / OGG</div>
+    <div class="name" id="fileName"></div>
+    <input type="file" id="fileInput" accept="audio/*">
+  </div>
+
+  <canvas id="waveform"></canvas>
+
+  <div class="rec-row">
+    <button class="btn btn-rec" id="recBtn" onclick="toggleRecord()">
+      <span id="recIcon">⏺</span> <span id="recLabel">录音</span>
+    </button>
+    <button class="btn btn-send" id="sendBtn" onclick="sendAudio()" disabled>
+      ▶ 识别
+    </button>
+  </div>
+
+  <div class="status" id="status"></div>
+  <div class="result-box" id="resultBox">
+    <h3><span>✨</span> 识别结果</h3>
+    <div class="result-text" id="resultText"></div>
+    <div class="result-meta" id="resultMeta"></div>
+  </div>
+</div>
+</div>
+
+<script>
+let mediaRecorder, audioChunks=[], audioBlob=null, isRecording=false;
+let analyser, animId, canvasCtx;
+const canvas = document.getElementById('waveform');
+
+// ── File handling ──
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  audioBlob = file;
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('sendBtn').disabled = false;
+  setStatus('📄 已选择: ' + file.name);
+}
+
+// ── Recording ──
+async function toggleRecord() {
+  if(isRecording) { stopRecord(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1}});
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, {mimeType:'audio/webm;codecs=opus'});
+    mediaRecorder.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t=>t.stop());
+      audioBlob = new Blob(audioChunks, {type:'audio/webm'});
+      document.getElementById('sendBtn').disabled = false;
+      document.getElementById('fileName').textContent = '';
+      setStatus('🎤 录音完成 (' + (audioChunks.length) + ' chunks)');
+      stopWaveform();
+    };
+    mediaRecorder.start(250);
+    isRecording = true;
+    document.getElementById('recBtn').classList.add('recording');
+    document.getElementById('recIcon').textContent = '⏹';
+    document.getElementById('recLabel').textContent = '停止';
+    setStatus('🔴 录音中...');
+
+    // Waveform
+    const actx = new AudioContext();
+    const src = actx.createMediaStreamSource(stream);
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 256;
+    src.connect(analyser);
+    canvas.style.display = 'block';
+    canvasCtx = canvas.getContext('2d');
+    canvas.width = canvas.offsetWidth * 2;
+    canvas.height = canvas.offsetHeight * 2;
+    drawWaveform();
+  } catch(err) {
+    setStatus('❌ 麦克风权限被拒绝');
+  }
+}
+
+function stopRecord() {
+  if(mediaRecorder && mediaRecorder.state!=='inactive') mediaRecorder.stop();
+  isRecording = false;
+  document.getElementById('recBtn').classList.remove('recording');
+  document.getElementById('recIcon').textContent = '⏺';
+  document.getElementById('recLabel').textContent = '录音';
+}
+
+function drawWaveform() {
+  if(!analyser) return;
+  const bufLen = analyser.frequencyBinCount;
+  const data = new Uint8Array(bufLen);
+  const w = canvas.width, h = canvas.height;
+  function draw() {
+    animId = requestAnimationFrame(draw);
+    analyser.getByteTimeDomainData(data);
+    canvasCtx.fillStyle = 'rgba(39,39,42,0.3)';
+    canvasCtx.fillRect(0,0,w,h);
+    canvasCtx.lineWidth = 2;
+    canvasCtx.strokeStyle = '#60a5fa';
+    canvasCtx.beginPath();
+    const sliceW = w/bufLen;
+    let x = 0;
+    for(let i=0;i<bufLen;i++){
+      const v = data[i]/128.0;
+      const y = v*h/2;
+      i===0 ? canvasCtx.moveTo(x,y) : canvasCtx.lineTo(x,y);
+      x+=sliceW;
+    }
+    canvasCtx.lineTo(w,h/2);
+    canvasCtx.stroke();
+  }
+  draw();
+}
+
+function stopWaveform() {
+  if(animId) cancelAnimationFrame(animId);
+  setTimeout(()=>{ canvas.style.display='none'; }, 1000);
+}
+
+// ── Send ──
+async function sendAudio() {
+  if(!audioBlob) return;
+  const lang = document.getElementById('lang').value;
+  const fmt = document.getElementById('fmt').value;
+  const sendBtn = document.getElementById('sendBtn');
+  const resultBox = document.getElementById('resultBox');
+  const resultText = document.getElementById('resultText');
+  const resultMeta = document.getElementById('resultMeta');
+
+  sendBtn.disabled = true;
+  sendBtn.innerHTML = '<span class="spinner"></span> 识别中...';
+  resultBox.style.display = 'none';
+  setStatus('⏳ 正在转写...');
+
+  const fd = new FormData();
+  const ext = audioBlob.type.includes('webm') ? 'webm' : (audioBlob.name||'audio').split('.').pop();
+  fd.append('file', audioBlob, 'recording.' + ext);
+  fd.append('model', 'qwen3-asr');
+  fd.append('language', lang);
+  fd.append('response_format', fmt);
+
+  const t0 = performance.now();
+  try {
+    const resp = await fetch('/v1/audio/transcriptions', {method:'POST', body:fd});
+    const elapsed = ((performance.now()-t0)/1000).toFixed(2);
+
+    if(!resp.ok) {
+      const err = await resp.text();
+      resultText.textContent = '❌ Error: ' + err;
+      resultMeta.innerHTML = '';
+      resultBox.style.display = 'block';
+      setStatus('');
+      return;
+    }
+
+    if(fmt==='json') {
+      const j = await resp.json();
+      resultText.textContent = j.text;
+      resultMeta.innerHTML = '<span>⏱ ' + elapsed + 's</span><span>📋 JSON</span>';
+    } else if(fmt==='verbose_json') {
+      const j = await resp.json();
+      resultText.textContent = j.text;
+      let meta = '<span>⏱ ' + elapsed + 's</span>'
+        + '<span>🕐 ' + j.duration + 's</span>'
+        + '<span>📊 ' + (j.segments||[]).length + ' segments</span>';
+      resultMeta.innerHTML = meta;
+    } else {
+      const text = await resp.text();
+      resultText.textContent = text;
+      resultMeta.innerHTML = '<span>⏱ ' + elapsed + 's</span><span>📋 ' + fmt.toUpperCase() + '</span>';
+    }
+    resultBox.style.display = 'block';
+    setStatus('✅ 完成');
+  } catch(e) {
+    resultText.textContent = '❌ ' + e.message;
+    resultMeta.innerHTML = '';
+    resultBox.style.display = 'block';
+    setStatus('');
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.innerHTML = '▶ 识别';
+  }
+}
+
+function setStatus(s) { document.getElementById('status').textContent = s; }
+</script>
+</body>
+</html>"""
+
+PORT = 8088
 
 asr_engine = ASREngine()
 start_time = time.time()
@@ -464,14 +835,10 @@ app.add_middleware(
 )
 
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Qwen3-ASR Apple Silicon",
-        "version": "1.0",
-        "model": MODEL_NAME,
-        "uptime": time.time() - start_time,
-    }
+@app.get("/", response_class=HTMLResponse)
+async def playground():
+    """ASR Playground — 浏览器录音测试页"""
+    return HTMLResponse(PLAYGROUND_HTML)
 
 
 def cleanup_file(path: str):
@@ -609,6 +976,21 @@ async def openai_transcribe(
         content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
+
+    # ── 2.5 转换不支持的格式 (webm/ogg/opus → wav) ──
+    ext = Path(tmp_path).suffix.lower()
+    if ext in [".webm", ".ogg", ".opus", ".weba"]:
+        wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
+        try:
+            import subprocess
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
+                capture_output=True, timeout=30,
+            )
+            Path(tmp_path).unlink(missing_ok=True)
+            tmp_path = wav_path
+        except Exception:
+            pass  # 如果 ffmpeg 不可用，尝试直接传给模型
 
     background_tasks.add_task(cleanup_file, tmp_path)
 

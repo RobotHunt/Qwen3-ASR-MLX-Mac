@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qwen3.asr-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/mini/Qwen3-ASR-MLX-Mac/.venv/bin/python</string>
+        <string>/Users/mini/Qwen3-ASR-MLX-Mac/fastapi_server.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/mini/Qwen3-ASR-MLX-Mac</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mini/Qwen3-ASR-MLX-Mac/server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/mini/Qwen3-ASR-MLX-Mac/server.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/mini/Qwen3-ASR-MLX-Mac/.venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
