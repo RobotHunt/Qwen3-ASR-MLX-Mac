@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实时语音助手 · ASR + TTS + 翻译</title>
+<meta name="description" content="Real-time speech recognition and text-to-speech playground">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary: #08080f;
+    --bg-card: rgba(18, 18, 28, 0.85);
+    --bg-card-hover: rgba(24, 24, 38, 0.95);
+    --bg-input: rgba(30, 30, 48, 0.8);
+    --border: rgba(255,255,255,0.06);
+    --border-active: rgba(99,102,241,0.4);
+    --text-primary: #f0f0f5;
+    --text-secondary: #8b8ba0;
+    --text-dim: #5a5a72;
+    --accent-1: #6366f1;
+    --accent-2: #8b5cf6;
+    --accent-3: #06b6d4;
+    --red: #ef4444;
+    --green: #10b981;
+    --gradient-main: linear-gradient(135deg, #6366f1, #8b5cf6, #06b6d4);
+    --shadow-glow: 0 0 40px rgba(99,102,241,0.15);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: '';
+    position: fixed; top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(99,102,241,0.07) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 80%, rgba(6,182,212,0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 50%, rgba(139,92,246,0.03) 0%, transparent 60%);
+    animation: bgDrift 25s ease-in-out infinite;
+    z-index: 0;
+  }
+  @keyframes bgDrift {
+    0%,100% { transform: translate(0,0) rotate(0deg); }
+    33% { transform: translate(-2%,1%) rotate(0.5deg); }
+    66% { transform: translate(1%,-1.5%) rotate(-0.5deg); }
+  }
+  .app {
+    position: relative; z-index: 1;
+    max-width: 780px; margin: 0 auto;
+    padding: 24px 20px 60px;
+  }
+
+  /* ── Header ── */
+  .header { text-align: center; margin-bottom: 28px; padding: 16px 0; }
+  .header h1 {
+    font-size: 2rem; font-weight: 800;
+    background: var(--gradient-main);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 6px; letter-spacing: -0.5px;
+  }
+  .header .sub {
+    color: var(--text-dim); font-size: 0.82rem; font-weight: 500;
+  }
+
+  /* ── Status Bar ── */
+  .status-bar {
+    display: flex; gap: 16px; margin-bottom: 20px;
+    padding: 10px 16px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; font-size: 0.78rem;
+  }
+  .status-item {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--text-secondary);
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--red); transition: background 0.3s;
+    flex-shrink: 0;
+  }
+  .status-dot.ok { background: var(--green); }
+
+  /* ── Config Row ── */
+  .config-row {
+    display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+  }
+  .config-item { flex: 1; min-width: 140px; }
+  .config-item label {
+    display: block; font-size: 0.72rem; color: var(--text-dim);
+    font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 6px;
+  }
+  .config-item select {
+    width: 100%; padding: 10px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 10px; color: var(--text-primary);
+    font-size: 0.85rem; font-family: inherit;
+    outline: none; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236366f1' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    transition: border-color 0.2s;
+  }
+  .config-item select:focus { border-color: var(--accent-1); }
+
+  /* ── Mic Panel ── */
+  .mic-panel {
+    background: var(--bg-card);
+    backdrop-filter: blur(24px);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px; margin-bottom: 24px;
+    text-align: center;
+    box-shadow: var(--shadow-glow);
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .mic-panel.active {
+    border-color: var(--border-active);
+    box-shadow: 0 0 60px rgba(99,102,241,0.2);
+  }
+  .mic-btn {
+    width: 88px; height: 88px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.1);
+    background: rgba(30,30,45,0.8);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+    position: relative;
+  }
+  .mic-btn:hover {
+    border-color: var(--accent-1);
+    transform: scale(1.05);
+    box-shadow: 0 0 30px rgba(99,102,241,0.2);
+  }
+  .mic-btn .icon { font-size: 2rem; transition: all 0.3s; }
+  .mic-btn.recording {
+    border-color: var(--red);
+    background: rgba(239,68,68,0.15);
+    animation: recPulse 1.5s ease infinite;
+  }
+  .mic-btn.recording .icon { font-size: 1.6rem; }
+  @keyframes recPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.3); }
+    50% { box-shadow: 0 0 0 16px rgba(239,68,68,0); }
+  }
+  .mic-label {
+    margin-top: 14px; font-size: 0.82rem;
+    color: var(--text-secondary); font-weight: 500;
+  }
+  .mic-label .timer {
+    color: var(--red); font-variant-numeric: tabular-nums; font-weight: 600;
+  }
+  canvas#waveform {
+    width: 100%; height: 56px; border-radius: 12px;
+    margin-top: 16px; display: none;
+  }
+  .processing-hint {
+    margin-top: 12px; font-size: 0.8rem;
+    color: var(--accent-3); display: none;
+    animation: fadeIn 0.3s;
+  }
+  .processing-hint.show { display: block; }
+  .processing-hint .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(6,182,212,0.3);
+    border-top-color: var(--accent-3);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn {
+    from { opacity:0; transform:translateY(6px); }
+    to { opacity:1; transform:none; }
+  }
+
+  /* ── Transcript Cards ── */
+  .transcript-section { margin-top: 4px; }
+  .section-title {
+    font-size: 0.8rem; font-weight: 600;
+    color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.8px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title .count {
+    background: var(--accent-1); color: #fff;
+    font-size: 0.7rem; padding: 2px 8px;
+    border-radius: 10px; font-weight: 700;
+  }
+  .transcript-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 20px; margin-bottom: 12px;
+    display: flex; align-items: flex-start; gap: 14px;
+    transition: all 0.2s;
+    animation: cardIn 0.4s cubic-bezier(0.4,0,0.2,1);
+  }
+  .transcript-card:hover {
+    border-color: rgba(255,255,255,0.1);
+    background: var(--bg-card-hover);
+  }
+  @keyframes cardIn {
+    from { opacity:0; transform:translateY(12px); }
+    to { opacity:1; transform:none; }
+  }
+  .card-body { flex: 1; min-width: 0; }
+  .card-text {
+    font-size: 0.95rem; line-height: 1.65;
+    color: var(--text-primary); word-break: break-word;
+  }
+  .card-meta {
+    display: flex; gap: 12px; margin-top: 8px;
+    font-size: 0.72rem; color: var(--text-dim);
+  }
+  .card-actions {
+    display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
+  }
+  .play-btn, .copy-btn {
+    width: 42px; height: 42px; border-radius: 12px;
+    border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.1rem; transition: all 0.2s;
+  }
+  .play-btn {
+    border: 1px solid rgba(16,185,129,0.3);
+    background: rgba(16,185,129,0.1); color: var(--green);
+  }
+  .play-btn:hover {
+    background: rgba(16,185,129,0.2);
+    transform: scale(1.08);
+    box-shadow: 0 4px 16px rgba(16,185,129,0.2);
+  }
+  .play-btn:disabled {
+    opacity: 0.4; cursor: not-allowed; transform: none;
+  }
+  .play-btn.loading { pointer-events: none; font-size: 0; }
+  .play-btn.loading::after {
+    content: '';
+    width: 16px; height: 16px;
+    border: 2px solid rgba(16,185,129,0.3);
+    border-top-color: var(--green);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .copy-btn {
+    border: 1px solid rgba(99,102,241,0.2);
+    background: rgba(99,102,241,0.08);
+    color: var(--accent-1); font-size: 0.9rem;
+  }
+  .copy-btn:hover {
+    background: rgba(99,102,241,0.15);
+    transform: scale(1.08);
+  }
+  .translate-btn {
+    width: 42px; height: 42px; border-radius: 12px;
+    border: 1px solid rgba(251,191,36,0.3);
+    background: rgba(251,191,36,0.08);
+    color: #fbbf24; font-size: 0.9rem;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+  }
+  .translate-btn:hover {
+    background: rgba(251,191,36,0.18);
+    transform: scale(1.08);
+    box-shadow: 0 4px 16px rgba(251,191,36,0.15);
+  }
+  .translate-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .translate-btn.loading { pointer-events: none; font-size: 0; }
+  .translate-btn.loading::after {
+    content: '';
+    width: 16px; height: 16px;
+    border: 2px solid rgba(251,191,36,0.3);
+    border-top-color: #fbbf24;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .translation-text {
+    margin-top: 10px; padding: 10px 14px;
+    background: rgba(251,191,36,0.06);
+    border: 1px solid rgba(251,191,36,0.12);
+    border-radius: 10px;
+    font-size: 0.88rem; line-height: 1.6;
+    color: #fde68a;
+    animation: fadeIn 0.3s;
+  }
+  .translation-text .lang-tag {
+    font-size: 0.65rem; font-weight: 700;
+    background: rgba(251,191,36,0.15);
+    color: #fbbf24;
+    padding: 2px 6px; border-radius: 4px;
+    margin-right: 6px; vertical-align: middle;
+  }
+  .target-lang-bar {
+    position: fixed; top: 16px; right: 16px; z-index: 100;
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(18,18,28,0.92);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-size: 0.78rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .target-lang-bar label {
+    color: #fbbf24; font-weight: 600; white-space: nowrap;
+  }
+  .target-lang-bar select {
+    padding: 6px 10px;
+    background: var(--bg-input);
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 8px; color: var(--text-primary);
+    font-size: 0.8rem; font-family: inherit;
+    outline: none; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+  }
+  .empty-state {
+    text-align: center; padding: 48px 20px;
+    color: var(--text-dim); font-size: 0.85rem;
+  }
+  .empty-state .icon { font-size: 2.5rem; margin-bottom: 12px; opacity: 0.5; }
+  .footer {
+    text-align: center; margin-top: 32px;
+    font-size: 0.72rem; color: var(--text-dim);
+  }
+  .footer a { color: var(--accent-1); text-decoration: none; }
+
+  @media (max-width: 520px) {
+    .app { padding: 16px 12px 40px; }
+    .header h1 { font-size: 1.5rem; }
+    .mic-panel { padding: 24px 16px; }
+    .config-row { flex-direction: column; }
+    .transcript-card { flex-direction: column; gap: 10px; }
+    .card-actions { flex-direction: row; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="header">
+    <h1>🎙 实时语音助手</h1>
+    <div class="sub">说话即转写 · 一键回放 · 实时翻译 · ASR + TTS + LLM</div>
+  </div>
+
+  <!-- Target Language Selector (fixed top-right) -->
+  <div class="target-lang-bar">
+    <label>🌐 翻译</label>
+    <select id="targetLang">
+      <option value="English">English</option>
+      <option value="中文" selected>中文</option>
+      <option value="日本語">日本語</option>
+      <option value="한국어">한국어</option>
+      <option value="Français">Français</option>
+      <option value="Deutsch">Deutsch</option>
+      <option value="Español">Español</option>
+      <option value="Русский">Русский</option>
+    </select>
+  </div>
+
+  <div class="status-bar">
+    <div class="status-item">
+      <div class="status-dot" id="asrDot"></div>
+      <span>ASR</span>
+      <span id="asrStatus" style="color:var(--text-dim)">…</span>
+    </div>
+    <div class="status-item">
+      <div class="status-dot" id="ttsDot"></div>
+      <span>TTS</span>
+      <span id="ttsStatus" style="color:var(--text-dim)">…</span>
+    </div>
+    <div class="status-item">
+      <div class="status-dot" id="llmDot"></div>
+      <span>LLM</span>
+      <span id="llmStatus" style="color:var(--text-dim)">…</span>
+    </div>
+  </div>
+
+  <div class="config-row">
+    <div class="config-item">
+      <label>识别语言</label>
+      <select id="asrLang">
+        <option value="zh" selected>中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="yue">粤语</option>
+      </select>
+    </div>
+    <div class="config-item">
+      <label>播放说话人</label>
+      <select id="ttsVoice">
+        <option value="alloy">Alloy 女·中英</option>
+        <option value="echo">Echo 男·英</option>
+        <option value="fable">Fable 女·英</option>
+        <option value="nova">Nova 女·日英</option>
+        <option value="onyx">Onyx 男·英</option>
+        <option value="shimmer">Shimmer 女·韩英</option>
+        <option value="ash">Ash 男·英</option>
+        <option value="coral">Coral 男·英</option>
+        <option value="sage" selected>Sage 男·中英</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="mic-panel" id="micPanel">
+    <button class="mic-btn" id="micBtn" onclick="toggleRecording()">
+      <span class="icon" id="micIcon">🎤</span>
+    </button>
+    <div class="mic-label" id="micLabel">点击开始连续录音</div>
+    <canvas id="waveform"></canvas>
+    <div class="processing-hint" id="processingHint">
+      <span class="spinner"></span> 正在识别...
+    </div>
+  </div>
+
+  <div class="transcript-section">
+    <div class="section-title">
+      📝 转写记录
+      <span class="count" id="segCount">0</span>
+    </div>
+    <div id="transcriptList">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">🗣️</div>
+        <div>开始说话，转写结果将显示在这里</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    ASR: <a href="https://asr.ins.chat" target="_blank">asr.ins.chat</a> ·
+    TTS: <a href="https://tts.ins.chat" target="_blank">tts.ins.chat</a> ·
+    LLM: <a href="https://mac-lmstudio.ins.chat" target="_blank">mac-lmstudio.ins.chat</a>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════
+// Config
+// ════════════════════════════════════════
+const ASR_BASE = 'https://asr.ins.chat';
+const TTS_BASE = 'https://tts.ins.chat';
+const LLM_BASE = 'https://mac-lmstudio.ins.chat';
+const LLM_MODEL = 'qwen3.5-0.8b-mlx';
+
+// ── VAD / Segmentation Tuning ──
+const SILENCE_THRESHOLD = 0.015;  // RMS below this = silence
+const SILENCE_DURATION_MS = 800;  // silence must last this long to trigger a split
+const MIN_SPEECH_MS = 1000;       // minimum speech duration before sending
+const MAX_SPEECH_MS = 15000;      // force-split after this long (prevents huge segments)
+const VAD_CHECK_INTERVAL = 80;    // check volume every 80ms
+const MAX_CONCURRENT_ASR = 2;     // max parallel ASR requests
+
+// ════════════════════════════════════════
+// State
+// ════════════════════════════════════════
+let isRecording = false;
+let mediaStream = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let audioContext = null;
+let analyser = null;
+let animFrameId = null;
+let recStartTime = 0;
+let recTimerInterval = null;
+let vadInterval = null;
+let segments = [];
+let currentAudio = null;
+let pendingASR = 0;
+
+// VAD state
+let segStartTime = 0;      // when current segment started recording
+let silenceStartTime = 0;   // when silence began (0 = currently speaking)
+let hasSpeechInSegment = false; // did we detect speech in this segment?
+
+// ════════════════════════════════════════
+// Health Check
+// ════════════════════════════════════════
+async function checkServices() {
+  try {
+    const r = await fetch(ASR_BASE + '/v1/models', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      document.getElementById('asrDot').classList.add('ok');
+      document.getElementById('asrStatus').textContent = '在线';
+    }
+  } catch { document.getElementById('asrStatus').textContent = '离线'; }
+  try {
+    const r = await fetch(TTS_BASE + '/health', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      document.getElementById('ttsDot').classList.add('ok');
+      document.getElementById('ttsStatus').textContent = '在线';
+    }
+  } catch { document.getElementById('ttsStatus').textContent = '离线'; }
+  // LLM
+  try {
+    const r = await fetch('https://mac-lmstudio.ins.chat/v1/models', { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      document.getElementById('llmDot').classList.add('ok');
+      document.getElementById('llmStatus').textContent = '在线';
+    }
+  } catch { document.getElementById('llmStatus').textContent = '离线'; }
+}
+checkServices();
+
+// ════════════════════════════════════════
+// Volume Detection (Client-side VAD)
+// ════════════════════════════════════════
+function getRMS() {
+  if (!analyser) return 0;
+  const data = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(data);
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+  return Math.sqrt(sum / data.length);
+}
+
+function checkVAD() {
+  if (!isRecording || !analyser) return;
+
+  const rms = getRMS();
+  const now = Date.now();
+  const segDuration = now - segStartTime;
+  const isSilent = rms < SILENCE_THRESHOLD;
+
+  if (!isSilent) {
+    // Speaking detected
+    hasSpeechInSegment = true;
+    silenceStartTime = 0;
+  } else if (silenceStartTime === 0) {
+    // Silence just started
+    silenceStartTime = now;
+  }
+
+  // Decide whether to split
+  const silenceDuration = silenceStartTime > 0 ? now - silenceStartTime : 0;
+  const shouldSplit =
+    // Case 1: Detected speech, then silence for long enough, and segment is long enough
+    (hasSpeechInSegment && silenceDuration >= SILENCE_DURATION_MS && segDuration >= MIN_SPEECH_MS)
+    // Case 2: Force-split if segment is too long (prevents huge audio files)
+    || (segDuration >= MAX_SPEECH_MS && hasSpeechInSegment);
+
+  if (shouldSplit) {
+    // Throttle: don't send if too many ASR requests in flight
+    if (pendingASR >= MAX_CONCURRENT_ASR) return;
+
+    // Stop current recorder → triggers onstop → sends to ASR
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+    // Start a new recorder on the same stream
+    startNewRecorderSegment();
+  }
+}
+
+// ════════════════════════════════════════
+// Recording (Continuous + Smart Split)
+// ════════════════════════════════════════
+async function toggleRecording() {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    await startRecording();
+  }
+}
+
+async function startRecording() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, sampleRate: { ideal: 16000 } }
+    });
+  } catch(e) {
+    alert('无法访问麦克风: ' + e.message);
+    return;
+  }
+
+  isRecording = true;
+
+  // AudioContext + Analyser (for waveform + VAD)
+  audioContext = new AudioContext();
+  const source = audioContext.createMediaStreamSource(mediaStream);
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;    // larger for better RMS accuracy
+  analyser.smoothingTimeConstant = 0.3;
+  source.connect(analyser);
+
+  // Start first recorder segment
+  startNewRecorderSegment();
+
+  // Start VAD monitoring
+  vadInterval = setInterval(checkVAD, VAD_CHECK_INTERVAL);
+
+  // UI
+  document.getElementById('micPanel').classList.add('active');
+  document.getElementById('micBtn').classList.add('recording');
+  document.getElementById('micIcon').textContent = '⏹';
+  recStartTime = Date.now();
+  updateTimer();
+  recTimerInterval = setInterval(updateTimer, 100);
+
+  // Waveform
+  const canvas = document.getElementById('waveform');
+  canvas.style.display = 'block';
+  drawWaveform(canvas);
+}
+
+function startNewRecorderSegment() {
+  if (!mediaStream || !isRecording) return;
+
+  audioChunks = [];
+  segStartTime = Date.now();
+  silenceStartTime = 0;
+  hasSpeechInSegment = false;
+
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '');
+  mediaRecorder = mimeType
+    ? new MediaRecorder(mediaStream, { mimeType })
+    : new MediaRecorder(mediaStream);
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) audioChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = () => {
+    // Only send if there was actual speech and enough data
+    if (audioChunks.length > 0 && hasSpeechInSegment) {
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+      if (blob.size > 2000) {
+        sendToASR(blob);
+      }
+    }
+  };
+
+  mediaRecorder.start(200); // collect data every 200ms
+}
+
+function stopRecording() {
+  isRecording = false;
+
+  // Stop VAD monitoring
+  if (vadInterval) { clearInterval(vadInterval); vadInterval = null; }
+
+  // Stop current recorder (triggers onstop → send last segment)
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    // Mark as having speech so the last segment gets sent
+    hasSpeechInSegment = true;
+    mediaRecorder.stop();
+  }
+
+  // Stop media stream & cleanup
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+  if (recTimerInterval) { clearInterval(recTimerInterval); recTimerInterval = null; }
+  analyser = null;
+
+  // UI
+  document.getElementById('micPanel').classList.remove('active');
+  document.getElementById('micBtn').classList.remove('recording');
+  document.getElementById('micIcon').textContent = '🎤';
+  document.getElementById('waveform').style.display = 'none';
+
+  if (pendingASR > 0) {
+    document.getElementById('micLabel').innerHTML =
+      '<span class="spinner" style="display:inline-block;width:12px;height:12px;border:2px solid rgba(6,182,212,0.3);border-top-color:var(--accent-3);border-radius:50%;animation:spin 0.6s linear infinite;vertical-align:middle;margin-right:6px;"></span>处理最后的录音...';
+  } else {
+    document.getElementById('micLabel').textContent = '点击开始连续录音';
+  }
+}
+
+function updateTimer() {
+  const s = ((Date.now() - recStartTime) / 1000).toFixed(1);
+  const rms = analyser ? getRMS() : 0;
+  const vol = Math.min(100, Math.round(rms * 500));
+  const volBar = '█'.repeat(Math.ceil(vol / 10)) + '░'.repeat(10 - Math.ceil(vol / 10));
+  const pendingText = pendingASR > 0 ? ` · 🔄${pendingASR}` : '';
+  document.getElementById('micLabel').innerHTML =
+    `🔴 <span class="timer">${s}s</span> &nbsp;${volBar}&nbsp; 点击停止${pendingText}`;
+}
+
+// ════════════════════════════════════════
+// Waveform
+// ════════════════════════════════════════
+function drawWaveform(canvas) {
+  if (!analyser) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth * 2;
+  canvas.height = canvas.offsetHeight * 2;
+  const w = canvas.width, h = canvas.height;
+  const bufLen = analyser.frequencyBinCount;
+  const data = new Uint8Array(bufLen);
+
+  function draw() {
+    animFrameId = requestAnimationFrame(draw);
+    if (!analyser) return;
+    analyser.getByteTimeDomainData(data);
+    ctx.fillStyle = 'rgba(8,8,15,0.4)';
+    ctx.fillRect(0, 0, w, h);
+    const gradient = ctx.createLinearGradient(0, 0, w, 0);
+    gradient.addColorStop(0, '#6366f1');
+    gradient.addColorStop(0.5, '#8b5cf6');
+    gradient.addColorStop(1, '#06b6d4');
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    const sliceW = w / bufLen;
+    let x = 0;
+    for (let i = 0; i < bufLen; i++) {
+      const v = data[i] / 128.0;
+      const y = v * h / 2;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      x += sliceW;
+    }
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+  }
+  draw();
+}
+
+// ════════════════════════════════════════
+// ASR Request
+// ════════════════════════════════════════
+async function sendToASR(blob) {
+  const lang = document.getElementById('asrLang').value;
+  const ext = blob.type.includes('mp4') ? '.m4a' : '.webm';
+
+  const fd = new FormData();
+  fd.append('file', blob, 'recording' + ext);
+  fd.append('model', 'qwen3-asr');
+  fd.append('language', lang);
+  fd.append('response_format', 'json');
+
+  pendingASR++;
+  showProcessing(true);
+
+  try {
+    const resp = await fetch(ASR_BASE + '/v1/audio/transcriptions', {
+      method: 'POST',
+      body: fd,
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(errText);
+    }
+    const data = await resp.json();
+    if (data.text && data.text.trim()) {
+      addSegment(data.text.trim());
+    }
+  } catch(e) {
+    console.error('ASR error:', e);
+  } finally {
+    pendingASR--;
+    if (pendingASR <= 0) {
+      pendingASR = 0;
+      showProcessing(false);
+      if (!isRecording) {
+        document.getElementById('micLabel').textContent = '点击开始连续录音';
+      }
+    }
+  }
+}
+
+function showProcessing(show) {
+  const el = document.getElementById('processingHint');
+  el.classList.toggle('show', show);
+}
+
+// ════════════════════════════════════════
+// Segment Management
+// ════════════════════════════════════════
+function addSegment(text) {
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
+  const seg = { id: segments.length, text, time: timeStr };
+  segments.unshift(seg);
+  renderNewSegment(seg);
+  document.getElementById('segCount').textContent = segments.length;
+  const empty = document.getElementById('emptyState');
+  if (empty) empty.remove();
+}
+
+function renderNewSegment(seg) {
+  const list = document.getElementById('transcriptList');
+  const card = document.createElement('div');
+  card.className = 'transcript-card';
+  card.id = 'seg-' + seg.id;
+  card.innerHTML = `
+    <div class="card-body">
+      <div class="card-text">${escapeHtml(seg.text)}</div>
+      <div class="card-meta">
+        <span>🕐 ${seg.time}</span>
+        <span>#${seg.id + 1}</span>
+      </div>
+    </div>
+    <div class="card-actions">
+      <button class="play-btn" id="play-${seg.id}" onclick="playTTS(${seg.id})" title="TTS 播放">🔊</button>
+      <button class="translate-btn" id="trans-${seg.id}" onclick="translateText(${seg.id})" title="翻译">🌐</button>
+      <button class="copy-btn" onclick="copyText(${seg.id})" title="复制文本">📋</button>
+    </div>
+  `;
+  list.insertBefore(card, list.firstChild);
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ════════════════════════════════════════
+// TTS Playback
+// ════════════════════════════════════════
+async function playTTS(segId) {
+  const seg = segments.find(s => s.id === segId);
+  if (!seg) return;
+
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+
+  const btn = document.getElementById('play-' + segId);
+  const origHTML = btn.innerHTML;
+  btn.innerHTML = '';
+  btn.classList.add('loading');
+  btn.disabled = true;
+
+  const voice = document.getElementById('ttsVoice').value;
+
+  try {
+    const resp = await fetch(TTS_BASE + '/v1/audio/speech', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'qwen3-tts-customvoice',
+        input: seg.text,
+        voice: voice,
+        response_format: 'wav',
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(err);
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    currentAudio = audio;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      btn.innerHTML = origHTML;
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      btn.innerHTML = origHTML;
+    };
+    audio.play();
+    btn.innerHTML = '⏹';
+    btn.onclick = () => {
+      audio.pause();
+      currentAudio = null;
+      btn.innerHTML = '🔊';
+      btn.onclick = () => playTTS(segId);
+    };
+  } catch(e) {
+    console.error('TTS error:', e);
+    alert('TTS 生成失败: ' + (e.message || e).substring(0, 100));
+    btn.innerHTML = origHTML;
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+// ════════════════════════════════════════
+// Copy
+// ════════════════════════════════════════
+async function copyText(segId) {
+  const seg = segments.find(s => s.id === segId);
+  if (!seg) return;
+  try {
+    await navigator.clipboard.writeText(seg.text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = seg.text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+  const btn = document.querySelector(`#seg-${segId} .copy-btn`);
+  if (btn) {
+    btn.textContent = '✅';
+    setTimeout(() => { btn.textContent = '📋'; }, 1000);
+  }
+}
+
+// ════════════════════════════════════════
+// LLM Translation
+// ════════════════════════════════════════
+async function translateText(segId) {
+  const seg = segments.find(s => s.id === segId);
+  if (!seg) return;
+
+  // Check if translation already exists for this segment
+  const existingTranslation = document.querySelector(`#seg-${segId} .translation-text`);
+  if (existingTranslation) {
+    existingTranslation.remove();
+    return; // toggle off
+  }
+
+  const btn = document.getElementById('trans-' + segId);
+  btn.classList.add('loading');
+  btn.disabled = true;
+
+  const targetLang = document.getElementById('targetLang').value;
+
+  try {
+    const resp = await fetch(LLM_BASE + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a professional translator. Translate the user's text into ${targetLang}. Rules:\n- Output ONLY the translated text, nothing else\n- Preserve the original meaning, tone and style\n- Do not add explanations, notes or quotation marks\n- If the text is already in ${targetLang}, output it unchanged`
+          },
+          {
+            role: 'user',
+            content: seg.text
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 1024,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(err);
+    }
+
+    const data = await resp.json();
+    const translated = data.choices?.[0]?.message?.content?.trim();
+
+    if (translated) {
+      // Insert translation below the card text
+      const cardBody = document.querySelector(`#seg-${segId} .card-body`);
+      const transDiv = document.createElement('div');
+      transDiv.className = 'translation-text';
+      transDiv.innerHTML = `<span class="lang-tag">${escapeHtml(targetLang)}</span>${escapeHtml(translated)}`;
+      cardBody.appendChild(transDiv);
+
+      // Store translation on segment for TTS
+      seg.translation = translated;
+      seg.translationLang = targetLang;
+    }
+  } catch(e) {
+    console.error('Translation error:', e);
+    alert('翻译失败: ' + (e.message || e).substring(0, 100));
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

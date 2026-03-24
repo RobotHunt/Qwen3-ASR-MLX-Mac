@@ -50,7 +50,7 @@ except ImportError:
 # ──────────────────────────────────────────
 # 配置区：根据你的硬件修改
 # ──────────────────────────────────────────
-MODELS_DIR = os.path.expanduser("~/Downloads/Qwen3-ASR-Models")
+MODELS_DIR = os.path.expanduser("~/Qwen3-ASR-Models")
 
 # 模型注册表
 MODEL_REGISTRY = {
@@ -835,6 +835,15 @@ app.add_middleware(
 async def playground():
     """ASR Playground — 浏览器录音测试页"""
     return HTMLResponse(PLAYGROUND_HTML)
+
+
+@app.get("/realtime", response_class=HTMLResponse)
+async def realtime_app():
+    """实时 ASR + TTS 联合应用"""
+    html_path = Path(__file__).parent / "realtime_app.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="realtime_app.html not found")
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
 
 
 def cleanup_file(path: str):

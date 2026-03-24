@@ -17,7 +17,7 @@ import soundfile as sf
 import numpy as np
 
 # 模型配置：优先使用本地下载的模型
-MODELS_DIR = os.path.expanduser("~/Downloads/Qwen3-ASR-Models")
+MODELS_DIR = os.path.expanduser("~/Qwen3-ASR-Models")
 _local_path = os.path.join(MODELS_DIR, "ASR-1.7B-8bit")
 MODEL_NAME = _local_path if os.path.isdir(_local_path) else "mlx-community/Qwen3-ASR-1.7B-8bit"
 
