@@ -1,7 +1,6 @@
 """
-Qwen3-ASR FastAPI 服务端 · OpenAI 兼容 API
-专为 Apple Silicon (M1/M2/M3/M4) 设计
-实时语音识别 · VAD 长音频分段
+ASR FastAPI Server · OpenAI-Compatible API
+本地语音识别服务 · VAD 长音频分段
 
 OpenAI 兼容端点:
   POST /v1/audio/transcriptions         — 对标 whisper-1
@@ -57,8 +56,7 @@ MODELS_DIR = os.path.expanduser("~/Downloads/Qwen3-ASR-Models")
 MODEL_REGISTRY = {
     "qwen3-asr": {
         "path": f"{MODELS_DIR}/ASR-1.7B-8bit",
-        "hf_fallback": "mlx-community/Qwen3-ASR-1.7B-8bit",
-        "description": "Qwen3 语音识别模型 1.7B 参数 8-bit 量化，支持中英日韩等多语言",
+        "description": "多语言语音识别模型，支持中英日韩等语言",
         "capabilities": ["transcription", "streaming", "vad-segmentation"],
         "languages": ["zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru"],
     },
@@ -76,9 +74,7 @@ def resolve_model_path(model_id: str) -> str:
     if not info:
         return None
     local_path = info["path"]
-    if os.path.isdir(local_path):
-        return local_path
-    return info.get("hf_fallback", local_path)
+    return local_path
 
 # 默认模型
 DEFAULT_MODEL_ID = "qwen3-asr"
@@ -257,7 +253,7 @@ class ASREngine:
         with self._lock:
             if self._is_loaded:
                 return
-            print(f"🔄 Loading ASR model: {self.model_name}")
+            print(f"🔄 Loading ASR model...")
             try:
                 from mlx_audio.stt import load
                 self._model = load(self.model_name)
@@ -577,7 +573,7 @@ PLAYGROUND_HTML = """<!DOCTYPE html>
 <div class="container">
 <div class="card">
   <div class="title">🎙 ASR Playground</div>
-  <div class="subtitle">OpenAI-Compatible Speech Recognition · Apple Silicon</div>
+  <div class="subtitle">OpenAI-Compatible Speech Recognition · Local Offline</div>
 
   <div class="controls">
     <div>
@@ -814,13 +810,13 @@ start_time = time.time()
 @asynccontextmanager
 async def lifespan(app):
     asr_engine.load_model()
-    print(f"🚀 Qwen3-ASR Server Started | Model: {MODEL_NAME} | Port: {PORT}")
+    print(f"🚀 ASR Server Started | Port: {PORT}")
     yield
     print("Shutting down ASR Server...")
 
 
 app = FastAPI(
-    title="Qwen3-ASR Apple Silicon API",
+    title="ASR API",
     version="1.0",
     description="本地离线语音识别服务 · 实时流式转写 · VAD 长音频分段",
     lifespan=lifespan,
@@ -863,7 +859,7 @@ async def openai_list_models():
             "id": model_id,
             "object": "model",
             "created": now,
-            "owned_by": "qwen3-asr-mlx",
+            "owned_by": "local",
             "description": info["description"],
             "capabilities": info["capabilities"],
             "languages": info["languages"],
