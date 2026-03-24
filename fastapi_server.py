@@ -1,13 +1,23 @@
 """
-Qwen3-ASR FastAPI 服务端
+Qwen3-ASR FastAPI 服务端 · OpenAI 兼容 API
 专为 Apple Silicon (M1/M2/M3/M4) 设计
 实时语音识别 · WebSocket 流式 · VAD 长音频分段
+
+OpenAI 兼容端点:
+  POST /v1/audio/transcriptions  — 对标 whisper-1
+  GET  /v1/models                — 模型列表
+
+原生端点:
+  POST /transcribe               — 文件转写 (SSE/VAD)
+  WS   /ws                       — 实时流式转写
+  GET  /health                   — 健康检查
 """
 import os
 import time
 import tempfile
 import threading
 from pathlib import Path
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Generator, Callable
@@ -23,8 +33,9 @@ from fastapi import (
     BackgroundTasks,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
 from pydantic import BaseModel
+from typing import List
 import uvicorn
 
 try:
@@ -45,14 +56,37 @@ except ImportError:
 # 配置区：根据你的硬件修改
 # ──────────────────────────────────────────
 MODELS_DIR = os.path.expanduser("~/Downloads/Qwen3-ASR-Models")
-MODEL_MAP = {
-    "ASR-1.7B-8bit": f"{MODELS_DIR}/ASR-1.7B-8bit",
+
+# 模型注册表
+MODEL_REGISTRY = {
+    "qwen3-asr": {
+        "path": f"{MODELS_DIR}/ASR-1.7B-8bit",
+        "hf_fallback": "mlx-community/Qwen3-ASR-1.7B-8bit",
+        "description": "Qwen3 语音识别模型 1.7B 参数 8-bit 量化，支持中英日韩等多语言",
+        "capabilities": ["transcription", "streaming", "vad-segmentation"],
+        "languages": ["zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru"],
+    },
 }
 
-# 优先使用本地模型，不存在则回退到 HuggingFace 名称
-_default_model_key = "ASR-1.7B-8bit"
-_local_path = MODEL_MAP[_default_model_key]
-MODEL_NAME = _local_path if os.path.isdir(_local_path) else "mlx-community/Qwen3-ASR-1.7B-8bit"
+# 旧 ID 向后兼容映射
+_LEGACY_MODEL_MAP = {"ASR-1.7B-8bit": "qwen3-asr"}
+
+def resolve_model_path(model_id: str) -> str:
+    """解析模型 ID 到实际路径，支持旧 ID 向后兼容"""
+    # 兼容旧 ID
+    if model_id in _LEGACY_MODEL_MAP:
+        model_id = _LEGACY_MODEL_MAP[model_id]
+    info = MODEL_REGISTRY.get(model_id)
+    if not info:
+        return None
+    local_path = info["path"]
+    if os.path.isdir(local_path):
+        return local_path
+    return info.get("hf_fallback", local_path)
+
+# 默认模型
+DEFAULT_MODEL_ID = "qwen3-asr"
+MODEL_NAME = resolve_model_path(DEFAULT_MODEL_ID)
 
 LANGUAGE = "zh"
 SAMPLE_RATE = 16000
@@ -61,6 +95,9 @@ SAMPLE_RATE = 16000
 VAD_THRESHOLD = 0.5
 VAD_MIN_SILENCE_MS = 300
 VAD_MIN_SPEECH_MS = 250
+
+# OpenAI 兼容的响应格式
+SUPPORTED_RESPONSE_FORMATS = ["json", "verbose_json", "text", "srt", "vtt"]
 
 
 # ──────────────────────────────────────────
@@ -420,13 +457,25 @@ class HealthResponse(BaseModel):
 # ──────────────────────────────────────────
 # FastAPI 应用
 # ──────────────────────────────────────────
+PORT = 8001  # TTS 服务占用 8000，ASR 使用 8001
+
 asr_engine = ASREngine()
 start_time = time.time()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    asr_engine.load_model()
+    print(f"🚀 Qwen3-ASR Server Started | Model: {MODEL_NAME} | Port: {PORT}")
+    yield
+    print("Shutting down ASR Server...")
+
 
 app = FastAPI(
     title="Qwen3-ASR Apple Silicon API",
     version="1.0",
     description="本地离线语音识别服务 · 实时流式转写 · VAD 长音频分段",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -436,12 +485,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup_event():
-    asr_engine.load_model()
-    print(f"🚀 Qwen3-ASR Server Started | Model: {MODEL_NAME}")
 
 
 @app.get("/")
@@ -454,34 +497,136 @@ async def root():
     }
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    return HealthResponse(
-        status="healthy",
-        model_loaded=asr_engine.is_loaded,
-        model_name=MODEL_NAME,
-    )
-
-
 def cleanup_file(path: str):
     Path(path).unlink(missing_ok=True)
 
 
-@app.post("/transcribe")
-async def transcribe(
+# ──────────────────────────────────────────
+# OpenAI 兼容端点
+# ──────────────────────────────────────────
+
+@app.get("/v1/models")
+async def openai_list_models():
+    """
+    OpenAI 兼容：列出可用模型
+    对标 GET /v1/models
+    """
+    now = int(time.time())
+    data = []
+    for model_id, info in MODEL_REGISTRY.items():
+        model_path = resolve_model_path(model_id)
+        data.append({
+            "id": model_id,
+            "object": "model",
+            "created": now,
+            "owned_by": "qwen3-asr-mlx",
+            "description": info["description"],
+            "capabilities": info["capabilities"],
+            "languages": info["languages"],
+            "ready": os.path.isdir(info["path"]),
+        })
+    return {"object": "list", "data": data}
+
+
+def _format_srt(text: str, duration: float) -> str:
+    """生成 SRT 字幕格式"""
+    def _ts(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    return f"1\n{_ts(0.0)} --> {_ts(duration)}\n{text}\n"
+
+
+def _format_vtt(text: str, duration: float) -> str:
+    """生成 WebVTT 字幕格式"""
+    def _ts(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+    return f"WEBVTT\n\n{_ts(0.0)} --> {_ts(duration)}\n{text}\n"
+
+
+def _format_srt_segments(segments: list) -> str:
+    """从 VAD 分段结果生成 SRT"""
+    def _ts(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    lines = []
+    for i, seg in enumerate(segments, 1):
+        lines.append(f"{i}")
+        lines.append(f"{_ts(seg['start'])} --> {_ts(seg['end'])}")
+        lines.append(seg["text"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _format_vtt_segments(segments: list) -> str:
+    """从 VAD 分段结果生成 VTT"""
+    def _ts(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+    lines = ["WEBVTT", ""]
+    for seg in segments:
+        lines.append(f"{_ts(seg['start'])} --> {_ts(seg['end'])}")
+        lines.append(seg["text"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+@app.post("/v1/audio/transcriptions")
+async def openai_transcribe(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(..., description="音频文件"),
-    language: str = Form(default="zh", description="语言: zh, en, ja, ko 等"),
-    stream: bool = Form(default=False, description="SSE 流式输出"),
-    use_vad: bool = Form(default=False, description="VAD 分段（长音频 >30s）"),
+    file: UploadFile = File(..., description="Audio file (wav/mp3/m4a/flac/ogg)"),
+    model: str = Form(default="qwen3-asr", description="Model ID"),
+    language: str = Form(default="zh", description="ISO language code: zh, en, ja, ko, etc."),
+    response_format: str = Form(default="json", description="Response format: json, verbose_json, text, srt, vtt"),
+    temperature: float = Form(default=0, description="Reserved for compatibility"),
 ):
     """
-    转写音频文件
+    OpenAI 兼容：音频转写
+    对标 POST /v1/audio/transcriptions (whisper-1)
 
-    - stream=false: 返回完整结果
-    - stream=true: SSE 流式返回
-    - use_vad=true: 长音频自动 VAD 分段
+    支持的 response_format:
+      - json: {"text": "..."}
+      - verbose_json: {"task": "transcribe", "language": "zh", "duration": 3.5, "text": "...", "segments": [...]}
+      - text: 纯文本
+      - srt: SRT 字幕格式
+      - vtt: WebVTT 字幕格式
     """
+    # ── 1. 校验参数 ──
+    # 兼容旧 ID
+    if model in _LEGACY_MODEL_MAP:
+        model = _LEGACY_MODEL_MAP[model]
+
+    if model not in MODEL_REGISTRY:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model '{model}'. Available: {list(MODEL_REGISTRY.keys())}"
+        )
+
+    if response_format not in SUPPORTED_RESPONSE_FORMATS:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported response_format '{response_format}'. Supported: {SUPPORTED_RESPONSE_FORMATS}"
+        )
+
+    # ── 2. 保存上传文件 ──
     with tempfile.NamedTemporaryFile(
         delete=False, suffix=Path(file.filename).suffix if file.filename else ".wav"
     ) as tmp:
@@ -491,71 +636,105 @@ async def transcribe(
 
     background_tasks.add_task(cleanup_file, tmp_path)
 
-    if stream:
-        def generate():
-            for chunk in asr_engine.stream_transcribe(tmp_path, language):
-                yield f"data: {chunk.text}\n\n"
-            yield "data: [DONE]\n\n"
+    # ── 3. 获取音频时长 ──
+    audio_duration = 0.0
+    try:
+        audio_data, sr = sf.read(tmp_path)
+        audio_duration = len(audio_data) / sr
+    except:
+        pass
 
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            background=background_tasks,
-        )
+    # ── 4. 决定是否使用 VAD 分段 (长音频自动启用) ──
+    use_vad = audio_duration > 30
 
-    result = asr_engine.transcribe_file(tmp_path, language, use_vad=use_vad)
-
-    return TranscriptionResponse(
-        text=result.text,
-        language=result.language,
-        duration=result.duration,
-        rtf=result.rtf,
-        timestamp=datetime.now(),
-    )
-
-
-@app.websocket("/ws")
-async def websocket_transcribe(websocket: WebSocket):
-    """
-    WebSocket 实时转写
-
-    发送: float32 音频块 (16kHz mono)
-    接收: JSON {"text": "...", "segment_id": 0, "rtf": 0.1}
-    """
-    await websocket.accept()
+    # ── 5. 转写 ──
     asr_engine.load_model()
 
-    vad = VADProcessor()
-    audio_buffer = np.array([], dtype=np.float32)
-    segment_id = 0
+    if use_vad and (response_format in ["verbose_json", "srt", "vtt"]):
+        # VAD 分段转写，保留每段的时间戳
+        segments = _transcribe_with_segments(tmp_path, language, audio_duration)
+        full_text = " ".join(s["text"] for s in segments if s["text"])
 
-    try:
-        while True:
-            data = await websocket.receive_bytes()
-            audio_chunk = np.frombuffer(data, dtype=np.float32)
-            audio_buffer = np.concatenate([audio_buffer, audio_chunk])
+        if response_format == "verbose_json":
+            return JSONResponse({
+                "task": "transcribe",
+                "language": language,
+                "duration": round(audio_duration, 2),
+                "text": full_text,
+                "segments": [
+                    {
+                        "id": i,
+                        "start": round(s["start"], 2),
+                        "end": round(s["end"], 2),
+                        "text": s["text"],
+                    }
+                    for i, s in enumerate(segments)
+                ],
+            })
+        elif response_format == "srt":
+            return PlainTextResponse(_format_srt_segments(segments), media_type="text/plain")
+        elif response_format == "vtt":
+            return PlainTextResponse(_format_vtt_segments(segments), media_type="text/plain")
+    else:
+        result = asr_engine.transcribe_file(tmp_path, language, use_vad=use_vad)
+        full_text = result.text
 
-            is_speech, _ = vad.process_chunk(audio_chunk)
+    # ── 6. 格式化响应 ──
+    if response_format == "json":
+        return JSONResponse({"text": full_text})
 
-            if not is_speech and len(audio_buffer) > SAMPLE_RATE:
-                if len(audio_buffer) > SAMPLE_RATE * 0.5:
-                    result = asr_engine.transcribe_audio(audio_buffer)
-                    await websocket.send_json({
-                        "text": result.text,
-                        "segment_id": segment_id,
-                        "rtf": result.rtf,
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                    segment_id += 1
+    elif response_format == "verbose_json":
+        return JSONResponse({
+            "task": "transcribe",
+            "language": language,
+            "duration": round(audio_duration, 2),
+            "text": full_text,
+            "segments": [
+                {"id": 0, "start": 0.0, "end": round(audio_duration, 2), "text": full_text}
+            ],
+        })
 
-                audio_buffer = np.array([], dtype=np.float32)
-                vad.reset()
+    elif response_format == "text":
+        return PlainTextResponse(full_text)
 
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        await websocket.send_json({"error": str(e)})
+    elif response_format == "srt":
+        return PlainTextResponse(_format_srt(full_text, audio_duration), media_type="text/plain")
+
+    elif response_format == "vtt":
+        return PlainTextResponse(_format_vtt(full_text, audio_duration), media_type="text/plain")
+
+
+def _transcribe_with_segments(
+    audio_path: str, language: str, audio_duration: float
+) -> list:
+    """
+    VAD 分段转写，返回带时间戳的 segments 列表
+    [{"text": "...", "start": 0.0, "end": 3.5}, ...]
+    """
+    audio, sr = preprocess_audio(audio_path, SAMPLE_RATE)
+    vad = VADProcessor(sample_rate=sr)
+    vad_segments = list(vad.split_by_silence(audio))
+
+    if not vad_segments:
+        result = asr_engine.transcribe_file(audio_path, language)
+        return [{"text": result.text, "start": 0.0, "end": audio_duration}]
+
+    results = []
+    for seg_audio, seg_start, seg_end in vad_segments:
+        temp_path = save_temp_audio(seg_audio, sr)
+        try:
+            result = asr_engine._model._model.generate(temp_path, language=language)
+            text = result.text if hasattr(result, "text") else str(result)
+            results.append({
+                "text": text,
+                "start": seg_start / sr,
+                "end": seg_end / sr,
+            })
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    return results
 
 
 if __name__ == "__main__":
-    uvicorn.run("fastapi_server:app", host="0.0.0.0", port=8000, reload=False)
+    uvicorn.run("fastapi_server:app", host="0.0.0.0", port=PORT, reload=False)
