@@ -2,6 +2,7 @@
 
 > 🚀 完全离线的高性能本地语音识别服务，专为 Mac M 系列芯片深度优化
 > 基于 [MLX](https://github.com/ml-explore/mlx) 框架 + Metal GPU 加速
+> **OpenAI API 兼容** — 直接对接支持 Whisper 的客户端
 
 ---
 
@@ -13,7 +14,7 @@ Qwen3-ASR-MLX-Mac/
 ├── setup.sh               # 一键安装 + 模型缓存
 ├── requirements.txt       # Python 核心依赖
 ├── demo.py                # CLI 综合演示工具
-└── fastapi_server.py      # FastAPI 生产级服务端
+└── fastapi_server.py      # FastAPI 服务端 (OpenAI 兼容)
 ```
 
 ---
@@ -21,87 +22,83 @@ Qwen3-ASR-MLX-Mac/
 ## ⚡ 快速开始
 
 ```bash
-# 一键安装 (创建环境 + 安装依赖 + 缓存 8-bit 模型)
+# 一键安装
 chmod +x setup.sh && ./setup.sh
 
 # 激活环境
 source .venv/bin/activate
 
-# 运行演示
-python demo.py transcribe test.wav     # 基础转写
-python demo.py stream test.wav         # 流式转写
-python demo.py vad test.wav            # VAD 分段长音频
-python demo.py benchmark test.wav      # RTF 性能压测
-
-# 启动 API 服务器
+# 启动 API 服务器 (端口 8001)
 python fastapi_server.py
 ```
 
 ---
 
-## 🚀 API 服务端
+## 🚀 API 接口
 
-### 架构特性
-
-1. **统一的 FastAPI 服务**：将转写、流式、VAD 逻辑完美合并在单文件内
-2. **WebSocket 实时流式**：向服务端推音频流，即时拿到增量识别文本
-3. **SSE 支持**：支持在 HTTP POST 时使用 `stream=true` 获取 Server-Sent Events
-
-### 启动
+### `GET /v1/models` — 模型列表
 
 ```bash
-python fastapi_server.py
-# 访问 Swagger UI: http://localhost:8000/docs
+curl -s http://localhost:8001/v1/models | python3 -m json.tool
 ```
 
-### API 接口使用
+返回模型能力、支持语言、就绪状态。
 
-**1. POST /transcribe — 基础 / 长音频 VAD 转写**
+### `POST /v1/audio/transcriptions` — 语音转写
+
+对标 OpenAI `whisper-1` 接口，支持 5 种响应格式。
+
+**基础转写 (json)**
 
 ```bash
-# 基础转写
-curl -X POST "http://localhost:8000/transcribe" \
+curl -X POST "http://localhost:8001/v1/audio/transcriptions" \
   -F "file=@test.wav" \
+  -F "model=qwen3-asr" \
   -F "language=zh"
-
-# 长音频自动 VAD 分段
-curl -X POST "http://localhost:8000/transcribe" \
-  -F "file=@long_audio.wav" \
-  -F "use_vad=true"
+# {"text": "你好世界"}
 ```
 
-**2. POST /transcribe — SSE 流式转写**
+**详细 JSON (verbose_json)**
 
 ```bash
-curl -X POST "http://localhost:8000/transcribe" \
+curl -X POST "http://localhost:8001/v1/audio/transcriptions" \
   -F "file=@test.wav" \
-  -F "stream=true"
+  -F "response_format=verbose_json"
+# {"task":"transcribe","language":"zh","duration":3.0,"text":"...","segments":[...]}
 ```
 
-**3. WebSocket /ws — 实时双向流转写**
+**纯文本 / SRT 字幕 / WebVTT 字幕**
 
-```python
-import websockets
-import asyncio
-import numpy as np
+```bash
+# 纯文本
+curl -X POST "http://localhost:8001/v1/audio/transcriptions" \
+  -F "file=@test.wav" -F "response_format=text"
 
-async def live_transcribe():
-    async with websockets.connect("ws://localhost:8000/ws") as ws:
-        # 发送 float32 音频块 (16kHz mono)
-        chunk = np.random.randn(480).astype(np.float32)
-        await ws.send(chunk.tobytes())
-        
-        # 接收 JSON: {"text": "...", "segment_id": 0, "rtf": 0.1, "timestamp": "..."}
-        result = await ws.recv()
-        print(result)
+# SRT 字幕
+curl -X POST "http://localhost:8001/v1/audio/transcriptions" \
+  -F "file=@test.wav" -F "response_format=srt"
 
-asyncio.run(live_transcribe())
+# WebVTT 字幕
+curl -X POST "http://localhost:8001/v1/audio/transcriptions" \
+  -F "file=@test.wav" -F "response_format=vtt"
 ```
+
+### 参数说明
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `file` | file | 必需 | 音频文件 (wav/mp3/m4a/flac/ogg) |
+| `model` | string | `qwen3-asr` | 模型 ID |
+| `language` | string | `zh` | 语言: zh, en, ja, ko 等 |
+| `response_format` | string | `json` | json / verbose_json / text / srt / vtt |
+| `temperature` | float | `0` | 保留字段（兼容用） |
+
+> 长音频 (>30s) 自动启用 VAD 分段，`verbose_json`/`srt`/`vtt` 格式下保留每段时间戳。
 
 ---
 
 ## 📝 许可
 
-本项目提供精简版的部署脚本和服务端代码。模型权重来自 [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit)，请遵循其许可协议。
+模型权重来自 [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit)，请遵循其许可协议。
 
 *Built for Apple Silicon · Powered by MLX · 2026.03*

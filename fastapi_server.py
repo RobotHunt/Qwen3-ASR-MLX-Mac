@@ -1,16 +1,12 @@
 """
 Qwen3-ASR FastAPI 服务端 · OpenAI 兼容 API
 专为 Apple Silicon (M1/M2/M3/M4) 设计
-实时语音识别 · WebSocket 流式 · VAD 长音频分段
+实时语音识别 · VAD 长音频分段
 
 OpenAI 兼容端点:
-  POST /v1/audio/transcriptions  — 对标 whisper-1
-  GET  /v1/models                — 模型列表
-
-原生端点:
-  POST /transcribe               — 文件转写 (SSE/VAD)
-  WS   /ws                       — 实时流式转写
-  GET  /health                   — 健康检查
+  POST /v1/audio/transcriptions         — 对标 whisper-1
+  WS   /v1/audio/transcriptions/stream  — 实时流式转写
+  GET  /v1/models                       — 模型列表
 """
 import os
 import time
@@ -20,7 +16,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Generator, Callable
+from typing import Optional, Generator
 
 import numpy as np
 from fastapi import (
@@ -31,11 +27,11 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     BackgroundTasks,
+    HTTPException,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel
-from typing import List
 import uvicorn
 
 try:
@@ -437,26 +433,7 @@ class ASREngine:
         return self._is_loaded and self._model is not None
 
 
-# ──────────────────────────────────────────
-# Pydantic 响应模型
-# ──────────────────────────────────────────
-class TranscriptionResponse(BaseModel):
-    text: str
-    language: str
-    duration: float
-    rtf: float
-    timestamp: datetime
 
-
-class HealthResponse(BaseModel):
-    status: str
-    model_loaded: bool
-    model_name: str
-
-
-# ──────────────────────────────────────────
-# FastAPI 应用
-# ──────────────────────────────────────────
 PORT = 8001  # TTS 服务占用 8000，ASR 使用 8001
 
 asr_engine = ASREngine()
@@ -613,7 +590,6 @@ async def openai_transcribe(
         model = _LEGACY_MODEL_MAP[model]
 
     if model not in MODEL_REGISTRY:
-        from fastapi import HTTPException
         raise HTTPException(
             status_code=400,
             detail=f"Unknown model '{model}'. Available: {list(MODEL_REGISTRY.keys())}"
@@ -734,6 +710,54 @@ def _transcribe_with_segments(
             Path(temp_path).unlink(missing_ok=True)
 
     return results
+
+
+@app.websocket("/v1/audio/transcriptions/stream")
+async def openai_ws_transcribe(websocket: WebSocket):
+    """
+    OpenAI 扩展：WebSocket 实时流式转写
+
+    客户端发送: float32 音频块 (16kHz mono)
+    服务端返回: JSON {"text": "...", "segment_id": 0, "is_final": true}
+    """
+    await websocket.accept()
+    asr_engine.load_model()
+
+    vad = VADProcessor()
+    audio_buffer = np.array([], dtype=np.float32)
+    segment_id = 0
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            audio_chunk = np.frombuffer(data, dtype=np.float32)
+            audio_buffer = np.concatenate([audio_buffer, audio_chunk])
+
+            is_speech, _ = vad.process_chunk(audio_chunk)
+
+            # 语音结束且缓冲区足够长时触发转写
+            if not is_speech and len(audio_buffer) > SAMPLE_RATE:
+                if len(audio_buffer) > SAMPLE_RATE * 0.5:
+                    result = asr_engine.transcribe_audio(audio_buffer)
+                    await websocket.send_json({
+                        "text": result.text,
+                        "segment_id": segment_id,
+                        "is_final": True,
+                        "duration": result.duration,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    segment_id += 1
+
+                audio_buffer = np.array([], dtype=np.float32)
+                vad.reset()
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass
 
 
 if __name__ == "__main__":
